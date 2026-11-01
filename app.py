@@ -1,7 +1,7 @@
 import os
 import pickle
 import numpy as np
-import cv2
+import opencv-python-headless
 import streamlit as st
 import matplotlib.pyplot as plt
 from PIL import Image
