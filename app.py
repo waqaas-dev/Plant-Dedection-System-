@@ -64,7 +64,7 @@ with st.sidebar:
     * **Course:** Digital Image Processing
     * **Semester:** 5th Semester
     * **Institute:** Aror University, Sukkur, Sindh
-    * **Domain:** Agricultural Computer Vision
+    * **Domain:** Agricultural 
     """
     )
     st.markdown("---")
