@@ -45,7 +45,7 @@ with col_title:
     )
     st.markdown("#### **Digital Image Processing (DIP) – Semester V Project**")
     st.caption(
-        "Department of Computer Science & Information Technology / Multimedia"
+        "Department of Artifical Intellegence  / Multimedia"
     )
 
 st.markdown("---")
