@@ -5,6 +5,10 @@ import numpy as np
 import cv2
 import streamlit as st
 import pandas as pd
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 from PIL import Image
 from skimage.feature import graycomatrix, graycoprops
 
@@ -35,7 +39,7 @@ col_logo, col_title = st.columns([1, 4])
 
 with col_logo:
     if LOGO_FILE:
-        st.image(LOGO_FILE, use_container_width=True)
+        st.image(LOGO_FILE, width="stretch")
     else:
         st.write("🏛️")
 
@@ -44,9 +48,7 @@ with col_title:
         "### **Aror University of Art, Architecture, Design & Heritage, Sukkur, Sindh**"
     )
     st.markdown("#### **Digital Image Processing (DIP) – Semester V Project**")
-    st.caption(
-        "Department of Artifical Intellegence  / Multimedia"
-    )
+    st.caption("Department of Artificial Intelligence / Multimedia")
 
 st.markdown("---")
 st.title("🌿 Automated Plant Leaf Disease Detection System")
@@ -86,6 +88,8 @@ with st.sidebar:
     st.markdown(
         """
     * 🔍 **Multi-Leaf Detection** — Detects & analyzes each leaf
+    * 📈 **Histogram Visualization** — Gray, RGB & Hue histograms
+    * 🧠 **Explainable Result** — Short reason for every diagnosis
     * 💊 **Remediation Suggestions** — Treatment advice
     * 📊 **History Tracking** — Session analysis log & CSV export
     """
@@ -275,6 +279,99 @@ def extract_features(p: dict):
 
 
 # ---------------------------------------------------------------
+# NEW: HISTOGRAM VISUALIZATION
+# ---------------------------------------------------------------
+def build_histogram_figure(p: dict):
+    """Gray (before/after equalization), RGB and Hue histograms in one figure."""
+    fig, axes = plt.subplots(1, 3, figsize=(15, 3.6))
+
+    # 1) Grayscale histogram before / after histogram equalization
+    ax = axes[0]
+    ax.hist(p["blur"].mean(axis=2).ravel(), bins=64, range=(0, 255),
+            color="gray", alpha=0.6, label="Before equalization")
+    ax.hist(p["eq"].ravel(), bins=64, range=(0, 255),
+            color="green", alpha=0.5, label="After equalization")
+    ax.set_title("Gray-level histogram")
+    ax.set_xlabel("Intensity (0-255)")
+    ax.set_ylabel("Pixel count")
+    ax.legend(fontsize=8)
+
+    # 2) RGB channel histograms
+    ax = axes[1]
+    for i, (name, col) in enumerate([("Red", "red"), ("Green", "green"), ("Blue", "blue")]):
+        hist = cv2.calcHist([p["img"]], [i], None, [256], [0, 256]).ravel()
+        ax.plot(hist, color=col, label=name, linewidth=1.5)
+    ax.set_title("RGB colour histogram")
+    ax.set_xlabel("Intensity (0-255)")
+    ax.set_ylabel("Pixel count")
+    ax.legend(fontsize=8)
+
+    # 3) Hue histogram of leaf pixels with the healthy-green band highlighted
+    ax = axes[2]
+    leaf_px = p["leaf"] > 0
+    hue = p["hsv"][:, :, 0][leaf_px] if leaf_px.sum() >= 100 else p["hsv"][:, :, 0].ravel()
+    ax.hist(hue, bins=90, range=(0, 180), color="darkorange", alpha=0.8)
+    ax.axvspan(30, 85, color="green", alpha=0.18, label="Healthy-green hue band")
+    ax.set_title("Hue histogram (leaf pixels)")
+    ax.set_xlabel("Hue (0-180)")
+    ax.set_ylabel("Pixel count")
+    ax.legend(fontsize=8)
+
+    fig.tight_layout()
+    return fig
+
+
+def render_histograms(p: dict):
+    fig = build_histogram_figure(p)
+    st.pyplot(fig)
+    plt.close(fig)
+    st.caption(
+        "Pixels inside the green band of the Hue histogram are counted as healthy "
+        "tissue; pixels outside it (yellow / brown / dark) are counted as lesions."
+    )
+
+
+# ---------------------------------------------------------------
+# NEW: SHORT EXPLANATION (WHY HEALTHY / UNHEALTHY)
+# ---------------------------------------------------------------
+def explain_result(feats: np.ndarray, infection_pct: float,
+                   pred_label: str | None = None,
+                   confidence: float | None = None,
+                   used_model: bool = False) -> str:
+    """Return a short, plain-language reason for the classification."""
+    green_pct = max(0.0, 100.0 - infection_pct)
+    mean_sat = float(feats[1])
+    contrast = float(feats[6])
+    homogeneity = float(feats[8])
+    severity = _severity_level(infection_pct)
+
+    if severity == "healthy":
+        reason = (
+            f"**Why Healthy?** About **{green_pct:.1f} %** of the leaf pixels fall in the "
+            f"healthy-green hue range and the lesion mask covers only **{infection_pct:.1f} %** "
+            f"(below the 3 % threshold). The leaf colour is uniform (mean saturation "
+            f"{mean_sat:.0f}) and its texture is smooth (homogeneity {homogeneity:.2f}), "
+            f"so no significant lesions were found."
+        )
+    else:
+        level = {"mild": "mild", "moderate": "moderate", "severe": "severe"}[severity]
+        reason = (
+            f"**Why Unhealthy?** **{infection_pct:.1f} %** of the leaf area lies outside the "
+            f"healthy-green hue range (yellow / brown / dark pixels), which the segmentation "
+            f"marks as lesions. This is above the 3 % healthy threshold and is rated "
+            f"**{level}**. Texture features of the leaf: GLCM contrast {contrast:.2f}, "
+            f"homogeneity {homogeneity:.2f}."
+        )
+
+    if used_model and pred_label and confidence is not None:
+        reason += (
+            f"\n\nThe trained classifier predicted **{pred_label}** "
+            f"({confidence:.1f} % confidence) from the same colour and texture features."
+        )
+    return reason
+
+
+# ---------------------------------------------------------------
 # MULTI-LEAF DETECTION
 # ---------------------------------------------------------------
 def detect_multiple_leaves(img_rgb: np.ndarray, min_area_ratio: float = 0.01):
@@ -345,9 +442,10 @@ def detect_multiple_leaves(img_rgb: np.ndarray, min_area_ratio: float = 0.01):
 def _diagnose_and_remediate(
     pipeline: dict, feats: np.ndarray, infection_pct: float, source_name: str
 ):
-    """Render diagnostic results + remediation; return a history record dict."""
+    """Render diagnostic results + reason + remediation; return a history record dict."""
     pred_label: str | None = None
     confidence: float | None = None
+    used_model = False
 
     col_pct, col_result = st.columns([1, 2])
     col_pct.metric("Infected Surface Ratio", f"{infection_pct:.2f} %")
@@ -358,6 +456,7 @@ def _diagnose_and_remediate(
         pred_label = class_names[pred_idx]
         probs = model.predict_proba(scaled_feats)[0]
         confidence = float(probs[pred_idx]) * 100.0
+        used_model = True
 
         if "healthy" in pred_label.lower():
             col_result.success(
@@ -379,6 +478,11 @@ def _diagnose_and_remediate(
                 "Pathogen presence identified."
             )
             pred_label = f"Diseased ({infection_pct:.1f} %)"
+
+    # ---- NEW: short reason for the classification ----
+    st.info(
+        "🧠 " + explain_result(feats, infection_pct, pred_label, confidence, used_model)
+    )
 
     # ---- Remediation ----
     severity, sev_info, specific = get_remediation(infection_pct, pred_label)
@@ -435,21 +539,21 @@ with tab_single:
         # ---- Pipeline visualisation ----
         st.subheader("1️⃣ Pipeline Visualization")
         c1, c2, c3, c4 = st.columns(4)
-        c1.image(pipeline["img"], caption="Input Sample", use_container_width=True)
-        c2.image(pipeline["gray"], caption="Grayscale", use_container_width=True)
-        c3.image(pipeline["blur"], caption="Median Filtered", use_container_width=True)
-        c4.image(pipeline["eq"], caption="Histogram Equalized", use_container_width=True)
+        c1.image(pipeline["img"], caption="Input Sample", width="stretch")
+        c2.image(pipeline["gray"], caption="Grayscale", width="stretch")
+        c3.image(pipeline["blur"], caption="Median Filtered", width="stretch")
+        c4.image(pipeline["eq"], caption="Histogram Equalized", width="stretch")
 
         c5, c6, c7 = st.columns(3)
-        c5.image(pipeline["leaf"], caption="Binary Leaf Mask", use_container_width=True)
-        c6.image(
-            pipeline["segmented"], caption="Isolated Leaf ROI", use_container_width=True
-        )
-        c7.image(
-            pipeline["disease"], caption="Extracted Lesion Mask", use_container_width=True
-        )
+        c5.image(pipeline["leaf"], caption="Binary Leaf Mask", width="stretch")
+        c6.image(pipeline["segmented"], caption="Isolated Leaf ROI", width="stretch")
+        c7.image(pipeline["disease"], caption="Extracted Lesion Mask", width="stretch")
 
-        # ---- Diagnosis + remediation ----
+        # ---- NEW: histogram visualization ----
+        st.subheader("📈 Histogram Visualization")
+        render_histograms(pipeline)
+
+        # ---- Diagnosis + reason + remediation ----
         st.subheader("2️⃣ Diagnostic Analysis & Remediation")
         record = _diagnose_and_remediate(
             pipeline, feats, infection_pct, uploaded_file.name
@@ -471,7 +575,7 @@ with tab_multi:
         leaves, annotated_img = detect_multiple_leaves(raw_multi)
 
         st.subheader(f"Detected {len(leaves)} Leaf Region(s)")
-        st.image(annotated_img, caption="Detected Leaf Regions", use_container_width=True)
+        st.image(annotated_img, caption="Detected Leaf Regions", width="stretch")
 
         if len(leaves) == 0:
             st.warning(
@@ -487,21 +591,12 @@ with tab_multi:
                     lf, li = extract_features(lp)
 
                     lc1, lc2, lc3 = st.columns(3)
-                    lc1.image(
-                        leaf_info["crop"],
-                        caption="Cropped Leaf",
-                        use_container_width=True,
-                    )
-                    lc2.image(
-                        lp["segmented"],
-                        caption="Segmented",
-                        use_container_width=True,
-                    )
-                    lc3.image(
-                        lp["disease"],
-                        caption="Lesion Mask",
-                        use_container_width=True,
-                    )
+                    lc1.image(leaf_info["crop"], caption="Cropped Leaf", width="stretch")
+                    lc2.image(lp["segmented"], caption="Segmented", width="stretch")
+                    lc3.image(lp["disease"], caption="Lesion Mask", width="stretch")
+
+                    # NEW: histogram for each detected leaf
+                    render_histograms(lp)
 
                     rec = _diagnose_and_remediate(
                         lp,
@@ -536,7 +631,7 @@ with tab_history:
         sc3.metric("Diseased", len(df) - healthy_n)
         sc4.metric("Avg Infection %", f"{df['Infection %'].mean():.2f} %")
 
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width="stretch", hide_index=True)
 
         # CSV download
         csv_bytes = df.to_csv(index=False).encode("utf-8")
